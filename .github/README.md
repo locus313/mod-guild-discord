@@ -1,25 +1,29 @@
-# SKELETON - Module template
+# mod-guild-discord
 
-[English](README.md) | [Español](README_ES.md)
+Discord integration for guilds on [AzerothCore](https://www.azerothcore.org) (WotLK 3.3.5a) servers.
 
+> **Status:** early scaffold. The module compiles and loads its config but has no features yet.
 
-## How to create your own module
+## Planned features
 
-1. Use the script `create_module.sh` located in [`modules/`](https://github.com/azerothcore/azerothcore-wotlk/tree/master/modules) to start quickly with all the files you need and your git repo configured correctly (heavily recommended).
-1. You can then use these scripts to start your project: https://github.com/azerothcore/azerothcore-boilerplates
-1. Do not hesitate to compare with some of our newer/bigger/famous modules.
-1. Edit the `README.md` and other files (`include.sh` etc...) to fit your module. Note: the README is automatically created from `README_example.md` when you use the script `create_module.sh`.
-1. Publish your module to our [catalogue](https://www.azerothcore.org/catalogue.html).
+- Two-way guild and officer chat bridge between the game and a Discord channel
+- Guild event announcements: logins, level-ups, achievements, boss kills, member joins and leaves
+- Account linking between Discord users and game accounts
+- Guild rank to Discord role sync
 
+No client patch is needed. Everything goes through standard server chat packets.
 
-## How to test your module?
+See [`docs/research.md`](../docs/research.md) for prior-art analysis, architecture and the phased plan.
 
-Disable PCH (precompiled headers) and try to compile. To disable PCH, set `-DNOPCH=1` with Cmake (more info [here](http://www.azerothcore.org/wiki/CMake-options)).
+## Installation
 
-If you forgot some headers, it is time to add them!
+1. Clone into your AzerothCore `modules/` directory:
+   ```
+   git clone https://github.com/locus313/mod-guild-discord.git modules/mod-guild-discord
+   ```
+2. Re-run CMake and rebuild.
+3. Copy `conf/mod-guild-discord.conf.dist` to `mod-guild-discord.conf` in your config directory and edit it.
 
-## Licensing
+## License
 
-The default license of the skeleton-module template is the MIT but you can use a different license for your own modules.
-
-So modules can also be kept private. However, if you need to add new hooks to the core, as well as improving existing ones, you have to share your improvements because the main core is released under the AGPL license. Please [provide a PR](https://www.azerothcore.org/wiki/How-to-create-a-PR) if that is the case.
+MIT, inherited from the skeleton-module template. See [LICENSE](../LICENSE).
