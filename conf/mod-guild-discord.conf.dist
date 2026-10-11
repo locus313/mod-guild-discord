@@ -15,3 +15,9 @@
 #
 
 GuildDiscord.Enable = 0
+
+#
+#    Guild webhooks are configured in the characters database, table `mod_discord_guild_map`
+#    (guild_id, webhook_url). Changes are picked up on `.reload config`.
+#    Only guild chat is relayed (not officer chat), game -> Discord only.
+#
