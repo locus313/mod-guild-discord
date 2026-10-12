@@ -1,0 +1,16 @@
+name: unit-tests
+on:
+  push:
+    branches:
+      - 'master'
+  pull_request:
+
+jobs:
+  relay-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run core-free tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/relay_tests.cpp -o relay_tests -pthread
+          ./relay_tests
