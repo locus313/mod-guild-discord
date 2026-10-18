@@ -17,7 +17,7 @@
 namespace GuildDiscord
 {
     constexpr char const* ANNOUNCEMENT_USERNAME = "Guild Events";
-    constexpr std::uint32_t MAX_LEVEL = 80;
+    constexpr std::uint32_t ALWAYS_ANNOUNCE_LEVEL = 80;
     constexpr std::uint64_t STARTUP_GRACE_MS = 60 * 1000;
     constexpr std::uint64_t LOGIN_COOLDOWN_MS = 5 * 60 * 1000;
     constexpr std::uint64_t BOSS_DEDUPE_MS = 10 * 60 * 1000;
@@ -74,7 +74,7 @@ namespace GuildDiscord
     {
         if (newLevel <= oldLevel)
             return false;
-        if (newLevel == MAX_LEVEL)
+        if (newLevel == ALWAYS_ANNOUNCE_LEVEL)
             return true;
         return interval != 0 && newLevel % interval == 0;
     }
