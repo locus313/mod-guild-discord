@@ -17,7 +17,20 @@
 GuildDiscord.Enable = 0
 
 #
+#    GuildDiscord.Announce.Level.Interval
+#        Description: Announce a level-up only at multiples of this level (level 80 is always
+#                     announced). 0 announces only level 80.
+#        Default:     10
+#
+
+GuildDiscord.Announce.Level.Interval = 10
+
+#
 #    Guild webhooks are configured in the characters database, table `mod_discord_guild_map`
 #    (guild_id, webhook_url). Changes are picked up on `.reload config`.
-#    Only guild chat is relayed (not officer chat), game -> Discord only.
+#    Guild chat (not officer chat) is relayed game -> Discord only.
+#
+#    Announcements (posted as "Guild Events") are enabled per guild with these 0/1 columns,
+#    all off by default: announce_login, announce_logout, announce_level, announce_achievement,
+#    announce_bosskill.
 #
