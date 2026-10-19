@@ -1,6 +1,7 @@
 // Standalone tests for the core-free relay logic.
 // Build and run: g++ -std=c++17 -Wall -Isrc tests/relay_tests.cpp -o /tmp/relay_tests -pthread && /tmp/relay_tests
 
+#include "Announcements.h"
 #include "RateLimit.h"
 #include "RelayQueue.h"
 #include "RelayText.h"
@@ -59,6 +60,33 @@ int main()
     CHECK(ComputeWaitMs(204, { "", "0", "1.5" }) == 1500);
     CHECK(ComputeWaitMs(204, { "", "3", "1.5" }) == 0);
     CHECK(ComputeWaitMs(204, { "", "", "" }) == 0);
+
+    CHECK(ShouldAnnounceLevel(9, 10, 10));
+    CHECK(!ShouldAnnounceLevel(10, 11, 10));
+    CHECK(ShouldAnnounceLevel(79, 80, 10));
+    CHECK(ShouldAnnounceLevel(79, 80, 7));
+    CHECK(!ShouldAnnounceLevel(20, 10, 10));
+    CHECK(!ShouldAnnounceLevel(9, 10, 0));
+    CHECK(ShouldAnnounceLevel(79, 80, 0));
+
+    CHECK(!ShouldAnnounceAchievement(0));
+    CHECK(ShouldAnnounceAchievement(10));
+
+    CHECK(InStartupGrace(59999, 0));
+    CHECK(!InStartupGrace(60000, 0));
+
+    ExpiringSet set;
+    CHECK(set.TryInsert(1, 1000, 500));
+    CHECK(!set.TryInsert(1, 1499, 500));
+    CHECK(set.TryInsert(1, 1500, 500));
+    CHECK(set.TryInsert(2, 1000, 500));
+    CHECK(PairKey(1, 2) != PairKey(2, 1));
+
+    CHECK(FormatLogin("Bob") == "**Bob** has come online");
+    CHECK(FormatLevel("Bob", 20) == "**Bob** has reached level 20");
+    CHECK(FormatAchievement("Bob", "Level *10*", 10) ==
+          "**Bob** has earned the achievement **Level \\*10\\*** (10 points)");
+    CHECK(FormatBossKill("Bob", "Ragnaros_") == "**Bob** has slain **Ragnaros\\_**");
 
     if (failures == 0)
         std::cout << "all tests passed\n";

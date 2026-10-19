@@ -2,7 +2,10 @@
  * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
  */
 
+#include "AchievementMgr.h"
+#include "Announcements.h"
 #include "ConfigValueCache.h"
+#include "Creature.h"
 #include "DatabaseEnv.h"
 #include "Log.h"
 #include "Player.h"
@@ -13,12 +16,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 
 enum class GuildDiscordConfig
 {
     ENABLED,
+    LEVEL_INTERVAL,
 
     NUM_CONFIGS,
 };
@@ -31,6 +37,7 @@ public:
     void BuildConfigCache() override
     {
         SetConfigValue<bool>(GuildDiscordConfig::ENABLED, "GuildDiscord.Enable", false);
+        SetConfigValue<uint32>(GuildDiscordConfig::LEVEL_INTERVAL, "GuildDiscord.Announce.Level.Interval", 10);
     }
 };
 
@@ -93,33 +100,97 @@ namespace
     std::thread relayWorker;
     std::atomic<bool> relayStop{ false };
 
-    // Only touched on the world thread (startup, config reload and chat hook).
-    std::unordered_map<uint32, GuildDiscord::WebhookTarget> guildTargets;
+    struct GuildEntry
+    {
+        GuildDiscord::WebhookTarget target;
+        GuildDiscord::AnnounceToggles toggles;
+    };
+
+    using GuildMap = std::unordered_map<uint32, GuildEntry>;
+
+    // Hooks can run on map-update threads while a reload runs on the world thread, so readers
+    // take an immutable snapshot and reloads swap in a new one.
+    std::mutex guildMapMutex;
+    std::shared_ptr<GuildMap const> guildMap = std::make_shared<GuildMap const>();
+
+    std::shared_ptr<GuildMap const> GetGuildMap()
+    {
+        std::lock_guard<std::mutex> lock(guildMapMutex);
+        return guildMap;
+    }
+
+    GuildDiscord::ExpiringSet loginCooldown;
+    GuildDiscord::ExpiringSet bossDedupe;
+    std::atomic<uint64> startupMs{ 0 };
+
+    uint64 NowMs()
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
 
     void LoadGuildTargets()
     {
-        guildTargets.clear();
+        auto loaded = std::make_shared<GuildMap>();
 
-        QueryResult result = CharacterDatabase.Query("SELECT `guild_id`, `webhook_url` FROM `mod_discord_guild_map`");
-        if (!result)
-            return;
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT `guild_id`, `webhook_url`, `announce_login`, `announce_logout`, `announce_level`, "
+            "`announce_achievement`, `announce_bosskill` FROM `mod_discord_guild_map`");
 
-        do
+        if (result)
         {
-            Field* fields = result->Fetch();
-            uint32 const guildId = fields[0].Get<uint32>();
-
-            auto target = GuildDiscord::ParseWebhookUrl(fields[1].Get<std::string>());
-            if (!target)
+            do
             {
-                LOG_ERROR("module.guilddiscord", "Ignoring mod_discord_guild_map row for guild {}: not a valid Discord webhook URL.", guildId);
-                continue;
-            }
+                Field* fields = result->Fetch();
+                uint32 const guildId = fields[0].Get<uint32>();
 
-            guildTargets.emplace(guildId, std::move(*target));
-        } while (result->NextRow());
+                auto target = GuildDiscord::ParseWebhookUrl(fields[1].Get<std::string>());
+                if (!target)
+                {
+                    LOG_ERROR("module.guilddiscord", "Ignoring mod_discord_guild_map row for guild {}: not a valid Discord webhook URL.", guildId);
+                    continue;
+                }
 
-        LOG_INFO("module.guilddiscord", "Loaded {} guild webhook mapping(s).", guildTargets.size());
+                GuildDiscord::AnnounceToggles toggles;
+                toggles.login = fields[2].Get<bool>();
+                toggles.logout = fields[3].Get<bool>();
+                toggles.level = fields[4].Get<bool>();
+                toggles.achievement = fields[5].Get<bool>();
+                toggles.bossKill = fields[6].Get<bool>();
+
+                loaded->emplace(guildId, GuildEntry{ std::move(*target), toggles });
+            } while (result->NextRow());
+        }
+
+        LOG_INFO("module.guilddiscord", "Loaded {} guild webhook mapping(s).", loaded->size());
+
+        std::lock_guard<std::mutex> lock(guildMapMutex);
+        guildMap = std::move(loaded);
+    }
+
+    // Returns the entry only when the module is enabled and the guild is mapped.
+    // The snapshot is returned too so the entry stays alive for the caller.
+    std::pair<std::shared_ptr<GuildMap const>, GuildEntry const*> FindGuild(uint32 guildId)
+    {
+        if (!guildId || !guildDiscordConfig.GetConfigValue<bool>(GuildDiscordConfig::ENABLED))
+            return { nullptr, nullptr };
+
+        auto map = GetGuildMap();
+        auto const it = map->find(guildId);
+        if (it == map->end())
+            return { nullptr, nullptr };
+
+        GuildEntry const* entry = &it->second;
+        return { std::move(map), entry };
+    }
+
+    void Enqueue(uint32 guildId, GuildEntry const& entry, std::string_view username, std::string_view content)
+    {
+        relayQueue.Push({ entry.target, guildId, GuildDiscord::BuildWebhookPayload(username, content) });
+    }
+
+    void Announce(uint32 guildId, GuildEntry const& entry, std::string const& content)
+    {
+        Enqueue(guildId, entry, GuildDiscord::ANNOUNCEMENT_USERNAME, content);
     }
 
     // Returns false if the worker is shutting down.
@@ -173,6 +244,7 @@ namespace
 
     void StartRelayWorker()
     {
+        startupMs = NowMs();
         relayStop = false;
         relayWorker = std::thread(RunWorker);
     }
@@ -190,7 +262,12 @@ class GuildDiscordPlayerScript : public PlayerScript
 {
 public:
     GuildDiscordPlayerScript() : PlayerScript("GuildDiscordPlayerScript", {
-        PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE
+        PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE,
+        PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_BEFORE_LOGOUT,
+        PLAYERHOOK_ON_LEVEL_CHANGED,
+        PLAYERHOOK_ON_ACHI_COMPLETE,
+        PLAYERHOOK_ON_CREATURE_KILL
     }) { }
 
     // Officer chat is deliberately not relayed.
@@ -199,22 +276,87 @@ public:
         if (type != CHAT_MSG_GUILD || lang == LANG_ADDON)
             return;
 
-        if (!guildDiscordConfig.GetConfigValue<bool>(GuildDiscordConfig::ENABLED))
-            return;
-
-        uint32 const guildId = player->GetGuildId();
-        if (!guildId)
-            return;
-
-        auto const it = guildTargets.find(guildId);
-        if (it == guildTargets.end())
+        auto const [snapshot, entry] = FindGuild(player->GetGuildId());
+        if (!entry)
             return;
 
         std::string const content = GuildDiscord::SanitizeChat(msg);
         if (content.empty())
             return;
 
-        relayQueue.Push({ it->second, guildId, GuildDiscord::BuildWebhookPayload(player->GetName(), content) });
+        Enqueue(player->GetGuildId(), *entry, player->GetName(), content);
+    }
+
+    // Logins and logouts are suppressed while a restart reconnects everyone.
+    void OnPlayerLogin(Player* player) override
+    {
+        uint32 const guildId = player->GetGuildId();
+        auto const [snapshot, entry] = FindGuild(guildId);
+        if (!entry || !entry->toggles.login || GuildDiscord::InStartupGrace(NowMs(), startupMs))
+            return;
+
+        if (!loginCooldown.TryInsert(player->GetGUID().GetCounter(), NowMs(), GuildDiscord::LOGIN_COOLDOWN_MS))
+            return;
+
+        Announce(guildId, *entry, GuildDiscord::FormatLogin(player->GetName()));
+    }
+
+    // The guild id is still valid before logout teardown.
+    void OnPlayerBeforeLogout(Player* player) override
+    {
+        uint32 const guildId = player->GetGuildId();
+        auto const [snapshot, entry] = FindGuild(guildId);
+        if (!entry || !entry->toggles.logout || GuildDiscord::InStartupGrace(NowMs(), startupMs))
+            return;
+
+        Announce(guildId, *entry, GuildDiscord::FormatLogout(player->GetName()));
+    }
+
+    void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
+    {
+        uint32 const guildId = player->GetGuildId();
+        auto const [snapshot, entry] = FindGuild(guildId);
+        if (!entry || !entry->toggles.level)
+            return;
+
+        uint32 const level = player->GetLevel();
+        uint32 const interval = guildDiscordConfig.GetConfigValue<uint32>(GuildDiscordConfig::LEVEL_INTERVAL);
+        if (!GuildDiscord::ShouldAnnounceLevel(oldLevel, level, interval))
+            return;
+
+        Announce(guildId, *entry, GuildDiscord::FormatLevel(player->GetName(), level));
+    }
+
+    void OnPlayerAchievementComplete(Player* player, AchievementEntry const* achievement) override
+    {
+        if (!GuildDiscord::ShouldAnnounceAchievement(achievement->points))
+            return;
+
+        uint32 const guildId = player->GetGuildId();
+        auto const [snapshot, entry] = FindGuild(guildId);
+        if (!entry || !entry->toggles.achievement)
+            return;
+
+        char const* name = achievement->name[0]; // enUS
+        Announce(guildId, *entry, GuildDiscord::FormatAchievement(player->GetName(), name ? name : "", achievement->points));
+    }
+
+    // Fires once per killer, so a raid would announce the same boss repeatedly without the dedupe.
+    void OnPlayerCreatureKill(Player* killer, Creature* killed) override
+    {
+        if (!killed->IsDungeonBoss())
+            return;
+
+        uint32 const guildId = killer->GetGuildId();
+        auto const [snapshot, entry] = FindGuild(guildId);
+        if (!entry || !entry->toggles.bossKill)
+            return;
+
+        uint64 const key = GuildDiscord::PairKey(guildId, static_cast<uint32>(killed->GetGUID().GetCounter()));
+        if (!bossDedupe.TryInsert(key, NowMs(), GuildDiscord::BOSS_DEDUPE_MS))
+            return;
+
+        Announce(guildId, *entry, GuildDiscord::FormatBossKill(killer->GetName(), killed->GetName()));
     }
 };
 

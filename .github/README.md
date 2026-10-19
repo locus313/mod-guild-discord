@@ -2,9 +2,9 @@
 
 Discord integration for guilds on [AzerothCore](https://www.azerothcore.org) (WotLK 3.3.5a) servers.
 
-> **Status:** Phase 0 only: one-way guild chat relay (game → Discord). Nothing else is implemented yet.
+> **Status:** Phase 1: one-way guild chat relay and guild event announcements (game → Discord). Discord → game is not implemented yet.
 
-## Phase 0: guild chat relay
+## Guild chat relay and announcements
 
 Guild chat from each mapped guild is posted to a Discord webhook under the character's name. Officer chat is never relayed. Mentions are disabled.
 
@@ -14,6 +14,14 @@ Map a guild to a webhook in the characters database (picked up on `.reload confi
 INSERT INTO mod_discord_guild_map (guild_id, webhook_url)
 VALUES (1, 'https://discord.com/api/webhooks/<id>/<token>');
 ```
+
+Announcements post as "Guild Events" and are off until enabled per guild:
+
+```sql
+UPDATE mod_discord_guild_map SET announce_login = 1, announce_level = 1, announce_bosskill = 1 WHERE guild_id = 1;
+```
+
+Columns: `announce_login`, `announce_logout`, `announce_level`, `announce_achievement`, `announce_bosskill`. Level-ups post at multiples of `GuildDiscord.Announce.Level.Interval` and at level 80, achievements with 0 points are skipped, and login/logout notices pause for 60 seconds after startup.
 
 Then set `GuildDiscord.Enable = 1`. Treat webhook URLs as secrets.
 
