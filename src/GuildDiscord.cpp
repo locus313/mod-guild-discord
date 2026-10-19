@@ -4,20 +4,28 @@
 
 #include "AchievementMgr.h"
 #include "Announcements.h"
+#include "Chat.h"
 #include "ConfigValueCache.h"
 #include "Creature.h"
 #include "DatabaseEnv.h"
+#include "Guild.h"
+#include "GuildMgr.h"
+#include "InboundText.h"
 #include "Log.h"
 #include "Player.h"
 #include "RelayQueue.h"
 #include "RelayText.h"
 #include "ScriptMgr.h"
 #include "WebhookClient.h"
+#include "WorldPacket.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -48,6 +56,7 @@ namespace
     void LoadGuildTargets();
     void StartRelayWorker();
     void StopRelayWorker();
+    void DrainInbound();
 }
 
 class GuildDiscordWorldScript : public WorldScript
@@ -57,7 +66,8 @@ public:
         WORLDHOOK_ON_BEFORE_CONFIG_LOAD,
         WORLDHOOK_ON_AFTER_CONFIG_LOAD,
         WORLDHOOK_ON_STARTUP,
-        WORLDHOOK_ON_SHUTDOWN
+        WORLDHOOK_ON_SHUTDOWN,
+        WORLDHOOK_ON_UPDATE
     }) { }
 
     void OnBeforeConfigLoad(bool reload) override
@@ -81,6 +91,11 @@ public:
     void OnShutdown() override
     {
         StopRelayWorker();
+    }
+
+    void OnUpdate(uint32 /*diff*/) override
+    {
+        DrainInbound();
     }
 };
 
@@ -242,11 +257,105 @@ namespace
         }
     }
 
+    constexpr uint32 INBOUND_POLL_MS = 1000;
+    constexpr uint32 INBOUND_PRUNE_MS = 60000;
+    constexpr uint32 INBOUND_PER_TICK = 5;
+    constexpr std::size_t INBOUND_PENDING_CAP = 200;
+
+    struct InboundLine
+    {
+        uint32 guildId;
+        std::string text;
+    };
+
+    std::mutex inboundMutex;
+    std::deque<InboundLine> inboundPending;
+    std::thread inboundWorker;
+
+    // Rows older than 60 seconds are ignored so an outage never replays stale chat.
+    void PollInbound()
+    {
+        if (!guildDiscordConfig.GetConfigValue<bool>(GuildDiscordConfig::ENABLED))
+            return;
+
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT `id`, `wow_guild_id`, `display_name`, `message` FROM `mod_discord_relay_queue` "
+            "WHERE `processed` = 0 AND `created_at` >= NOW() - INTERVAL 60 SECOND ORDER BY `id` LIMIT 50");
+        if (!result)
+            return;
+
+        auto const map = GetGuildMap();
+        uint64 maxId = 0;
+
+        do
+        {
+            Field* fields = result->Fetch();
+            maxId = std::max<uint64>(maxId, fields[0].Get<uint64>());
+
+            uint32 const guildId = fields[1].Get<uint32>();
+            if (!map->count(guildId))
+                continue;
+
+            for (std::string& line : GuildDiscord::FormatInbound(fields[2].Get<std::string>(), fields[3].Get<std::string>()))
+            {
+                std::lock_guard<std::mutex> lock(inboundMutex);
+                if (inboundPending.size() < INBOUND_PENDING_CAP)
+                    inboundPending.push_back({ guildId, std::move(line) });
+            }
+        } while (result->NextRow());
+
+        // Synchronous so the next poll cannot see these rows again.
+        CharacterDatabase.DirectExecute("UPDATE `mod_discord_relay_queue` SET `processed` = 1 WHERE `processed` = 0 AND `id` <= {}", maxId);
+    }
+
+    void RunInboundWorker()
+    {
+        uint32 sincePrune = 0;
+        do
+        {
+            PollInbound();
+
+            sincePrune += INBOUND_POLL_MS;
+            if (sincePrune >= INBOUND_PRUNE_MS)
+            {
+                sincePrune = 0;
+                CharacterDatabase.DirectExecute("DELETE FROM `mod_discord_relay_queue` WHERE `processed` = 1 OR `created_at` < NOW() - INTERVAL 60 SECOND");
+            }
+        } while (SleepInterruptibly(INBOUND_POLL_MS));
+    }
+
+    // World thread: a few lines per tick keeps a burst from stalling the update loop.
+    // The text is sent as a guild-coloured system line since there is no sending character.
+    void DrainInbound()
+    {
+        for (uint32 i = 0; i < INBOUND_PER_TICK; ++i)
+        {
+            InboundLine line;
+            {
+                std::lock_guard<std::mutex> lock(inboundMutex);
+                if (inboundPending.empty())
+                    return;
+                line = std::move(inboundPending.front());
+                inboundPending.pop_front();
+            }
+
+            Guild* guild = sGuildMgr->GetGuildById(line.guildId);
+            if (!guild)
+                continue;
+
+            WorldPacket data;
+            ChatHandler::BuildChatPacket(data, CHAT_MSG_SYSTEM, LANG_UNIVERSAL, ObjectGuid::Empty, ObjectGuid::Empty,
+                "|cff40ff40" + line.text + "|r", 0);
+            guild->BroadcastPacket(&data);
+        }
+    }
+
     void StartRelayWorker()
     {
         startupMs = NowMs();
         relayStop = false;
         relayWorker = std::thread(RunWorker);
+        inboundWorker = std::thread(RunInboundWorker);
     }
 
     void StopRelayWorker()
@@ -255,6 +364,8 @@ namespace
         relayQueue.Close();
         if (relayWorker.joinable())
             relayWorker.join();
+        if (inboundWorker.joinable())
+            inboundWorker.join();
     }
 }
 

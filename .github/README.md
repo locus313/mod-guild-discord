@@ -2,7 +2,7 @@
 
 Discord integration for guilds on [AzerothCore](https://www.azerothcore.org) (WotLK 3.3.5a) servers.
 
-> **Status:** Phase 1: one-way guild chat relay and guild event announcements (game → Discord). Discord → game is not implemented yet.
+> **Status:** Phase 2: guild chat relay and announcements (game → Discord), plus Discord → game through the [`discord-relay`](../apps/discord-relay) sidecar.
 
 ## Guild chat relay and announcements
 
@@ -25,6 +25,12 @@ Columns: `announce_login`, `announce_logout`, `announce_level`, `announce_achiev
 
 Then set `GuildDiscord.Enable = 1`. Treat webhook URLs as secrets.
 
+## Discord to game
+
+A sidecar bot ([`apps/discord-relay`](../apps/discord-relay)) reads a Discord channel and inserts rows into `mod_discord_relay_queue`; the module polls that table about once a second and shows each message to online guild members as a green `[Discord] Name: text` line. Mentions and `|` escapes are stripped, long messages are split into up to 3 lines, and rows older than 60 seconds are dropped.
+
+Bind a channel with `UPDATE mod_discord_guild_map SET discord_channel_id = <channel id> WHERE guild_id = 1;`. See the sidecar README for the bot and scoped database account setup.
+
 Run the unit tests for the core-free logic with:
 
 ```
@@ -33,7 +39,7 @@ g++ -std=c++17 -Wall -Isrc tests/relay_tests.cpp -o /tmp/relay_tests -pthread &&
 
 ## Planned features
 
-- Two-way guild and officer chat bridge between the game and a Discord channel
+- Officer chat bridge
 - Guild event announcements: logins, level-ups, achievements, boss kills, member joins and leaves
 - Account linking between Discord users and game accounts
 - Guild rank to Discord role sync

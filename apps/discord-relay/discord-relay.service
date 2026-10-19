@@ -1,0 +1,14 @@
+[Unit]
+Description=mod-guild-discord Discord relay sidecar
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/discord-relay
+EnvironmentFile=/opt/discord-relay/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=5
+User=discord-relay
+
+[Install]
+WantedBy=multi-user.target

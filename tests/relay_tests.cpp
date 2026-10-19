@@ -2,6 +2,7 @@
 // Build and run: g++ -std=c++17 -Wall -Isrc tests/relay_tests.cpp -o /tmp/relay_tests -pthread && /tmp/relay_tests
 
 #include "Announcements.h"
+#include "InboundText.h"
 #include "RateLimit.h"
 #include "RelayQueue.h"
 #include "RelayText.h"
@@ -87,6 +88,40 @@ int main()
     CHECK(FormatAchievement("Bob", "Level *10*", 10) ==
           "**Bob** has earned the achievement **Level \\*10\\*** (10 points)");
     CHECK(FormatBossKill("Bob", "Ragnaros_") == "**Bob** has slain **Ragnaros\\_**");
+
+    CHECK(SanitizeDiscordText("hi <@123> and <@!4> <@&5> <#6>!") == "hi and !");
+    CHECK(SanitizeDiscordText("<:kek:123> <a:dance:9>") == ":kek: :dance:");
+    CHECK(SanitizeDiscordText("a\n\n  b\t|cffff0000red|r") == "a b cffff0000redr");
+    CHECK(SanitizeDiscordText("<>") == "<>");
+    CHECK(SanitizeDiscordText("   ") == "");
+
+    auto lines = FormatInbound("Bob", "hello world");
+    CHECK(lines.size() == 1 && lines[0] == "[Discord] Bob: hello world");
+    CHECK(FormatInbound("Bob", "<@1>").empty());
+    CHECK(FormatInbound("", "x")[0] == "[Discord] Unknown: x");
+
+    {
+        std::string longText;
+        for (int i = 0; i < 200; ++i)
+            longText += "word ";
+        auto chunks = FormatInbound("Bob", longText);
+        CHECK(chunks.size() == INBOUND_MAX_CHUNKS);
+        CHECK(chunks.back().size() >= 3 && chunks.back().substr(chunks.back().size() - 3) == "...");
+        for (auto const& c : chunks)
+            CHECK(c.size() <= INBOUND_CHUNK_BYTES);
+
+        auto big = FormatInbound("Bob", std::string(1000, 'x'));
+        CHECK(!big.empty());
+        for (auto const& c : big)
+            CHECK(c.size() <= INBOUND_CHUNK_BYTES);
+
+        // multibyte text must never be cut mid-character
+        std::string accents;
+        for (int i = 0; i < 300; ++i)
+            accents += "\xC3\xA9";
+        for (auto const& c : FormatInbound("B\xC3\xA9", accents))
+            CHECK(c.size() <= INBOUND_CHUNK_BYTES && (static_cast<unsigned char>(c.back()) < 0x80 || static_cast<unsigned char>(c[c.size() - 2]) == 0xC3));
+    }
 
     if (failures == 0)
         std::cout << "all tests passed\n";
