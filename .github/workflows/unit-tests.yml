@@ -14,3 +14,13 @@ jobs:
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/relay_tests.cpp -o relay_tests -pthread
           ./relay_tests
+
+  sidecar-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run sidecar tests
+        run: node --test apps/discord-relay/test/relay.test.js

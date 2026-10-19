@@ -31,3 +31,11 @@ _Avoid_: Event setting, feature flag
 **Relay Queue**:
 The bounded buffer of pending outbound messages. When full, the oldest message is dropped.
 _Avoid_: Message buffer, outbox
+
+**Inbound Relay**:
+Forwarding a Discord message from a mapped channel into a WoW Guild's in-game chat. It is the reverse of Relay and is shown as a system-style line prefixed `[Discord]`, never as a character.
+_Avoid_: Reverse relay, Discord chat import
+
+**Sidecar**:
+The separate bot process that owns the Discord connection and hands Inbound Relay messages to the worldserver through the database. The worldserver itself never connects to Discord for reading.
+_Avoid_: Bot, gateway client, bridge
